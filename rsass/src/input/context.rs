@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::fmt;
+use std::path::Path;
 
 use super::{
-    CargoLoader, FsLoader, LoadError, Loader, SourceFile, SourceKind,
-    Resolver, LoaderResolver,
+    CargoLoader, CargoLoaderFile, FsLoader, FsLoaderFile, LoadError, Loader,
+    LoaderResolver, ResolutionResult, Resolver, SourceFile, SourceKind,
 };
 use crate::output::{handle_parsed, CssData, Format};
 use crate::{Error, ScopeRef};
@@ -67,7 +67,7 @@ pub struct Context<AnyResolver: Resolver> {
 }
 
 /// A file-system based [`Context`].
-// pub type FsContext = Context<LoaderResolver<FsLoader::File, FsLoader>>;
+pub type FsContext = Context<LoaderResolver<FsLoaderFile, FsLoader>>;
 
 impl FsContext {
     /// Create a new `Context`, loading files based on the current
@@ -80,13 +80,16 @@ impl FsContext {
     ///
     /// The directory part of `path` is used as a base directory for the loader.
     pub fn for_path(path: &Path) -> Result<(Self, SourceFile), LoadError> {
-        let (file_context, file) = FsLoader::for_path(path)?;
-        Ok((Context::for_resolver(file_context), file))
+        let (file_loader, file) = FsLoader::for_path(path)?;
+        Ok((
+            Context::for_resolver(LoaderResolver::new(file_loader)),
+            file,
+        ))
     }
 
     /// Add a path to search for files.
     pub fn push_path(&mut self, path: &Path) {
-        self.loader.push_path(path);
+        self.resolver.loader.push_path(path);
     }
 }
 
@@ -97,7 +100,7 @@ impl FsContext {
 /// environment variable instead of the current working directory, and
 /// it prints `cargo:rerun-if-changed` messages for each path that it
 /// loads.
-pub type CargoContext = Context<CargoLoader::File, CargoLoader>;
+pub type CargoContext = Context<LoaderResolver<CargoLoaderFile, CargoLoader>>;
 
 impl CargoContext {
     /// Create a new `Context`, loading files based in the manifest
@@ -108,7 +111,9 @@ impl CargoContext {
     /// This assumes the program is called by `cargo` as a build script, so
     /// the `CARGO_MANIFEST_DIR` environment variable is set.
     pub fn for_crate() -> Result<Self, LoadError> {
-        Ok(Context::for_resolver(CargoLoader::for_crate()?))
+        Ok(Context::for_resolver(LoaderResolver::new(
+            CargoLoader::for_crate()?,
+        )))
     }
 
     /// Create a new `Context` and load a file.
@@ -118,7 +123,10 @@ impl CargoContext {
     /// containing the manifest of your package.
     pub fn for_path(path: &Path) -> Result<(Self, SourceFile), LoadError> {
         let (file_context, file) = CargoLoader::for_path(path)?;
-        Ok((Context::for_resolver(file_context), file))
+        Ok((
+            Context::for_resolver(LoaderResolver::new(file_context)),
+            file,
+        ))
     }
 
     /// Add a path to search for files.
@@ -126,21 +134,24 @@ impl CargoContext {
     /// If `path` is relative, it will be resolved from the directory
     /// containing the manifest of your package.
     pub fn push_path(&mut self, path: &Path) -> Result<(), LoadError> {
-        self.loader.push_path(path)
+        self.resolver.loader.push_path(path)
     }
 }
 
 impl<
-    AnyFile: std::fmt::Debug,
-    AnyLoader: Loader<File = AnyFile>,
-> Context<LoaderResolver<AnyFile, AnyLoader>> {
+        AnyFile: std::fmt::Debug + std::io::Read,
+        AnyLoader: Loader<File = AnyFile>,
+    > Context<LoaderResolver<AnyFile, AnyLoader>>
+{
     /// Create a new `Context` for a given file [`Loader`].
     ///
     /// Internally, this is identical to [`for_loader`][Context::for_resolver],
     /// using the default implementation of Resolver for Loader, and only
     /// exists for backwards compatibility
     pub fn for_loader(loader: AnyLoader) -> Self {
-        Context::for_resolver(<LoaderResolver<AnyLoader::File, AnyLoader>>::new(loader))
+        Context::for_resolver(
+            <LoaderResolver<AnyLoader::File, AnyLoader>>::new(loader),
+        )
     }
 }
 
@@ -198,14 +209,7 @@ impl<AnyResolver: Resolver> Context<AnyResolver> {
     /// Find a file.
     ///
     /// This method handles sass file name resolution, but delegates
-    /// the actual checking for existing files to the [`Loader`].
-    ///
-    /// Given a url like `my/util`, this method will check for
-    /// `my/util`, `my/util.scss`, `my/_util.scss`,
-    /// `my/util/index.scss`, and `my/util/_index.scss`.
-    /// The variants that are not a directory index will also be
-    /// checked for `.css` files (and in the future it may also check
-    /// for `.sass` files if rsass suports that format).
+    /// the actual url -> path resolution to the [`Resolver`].
     ///
     /// If `from` indicates that the loading is for an `@import` rule,
     /// some [extra file names][import-only] are checked.
@@ -224,11 +228,12 @@ impl<AnyResolver: Resolver> Context<AnyResolver> {
     ) -> Result<Option<SourceFile>, Error> {
         // Note: Should a "full stack" of bases be used here?
         // Or is this fine?
-        if let Some((path, mut file)) = self.resolver.resolve(
-            url,
-            from
-        )? {
+        if let Some(ResolutionResult { path, mut file }) =
+            self.resolver.resolve(url, &from)?
+        {
             let is_module = !from.is_import();
+            let source = from.url(&path);
+            let file = SourceFile::read(&mut file, source)?;
             self.lock_loading(&file, is_module)?;
             Ok(Some(file))
         } else {
@@ -267,7 +272,7 @@ impl<AnyResolver: Resolver> Context<AnyResolver> {
 impl<T: fmt::Debug + Resolver> fmt::Debug for Context<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Context")
-            .field("loader", &self.loader)
+            .field("resolver", &self.resolver)
             .field(
                 "scope",
                 &if self.scope.is_some() { "loaded" } else { "no" },

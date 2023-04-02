@@ -38,8 +38,18 @@ impl FsLoader {
     }
 }
 
+/// Define this separately so that it can be referenced in FsContext without
+/// referencing it via FsLoader::File. This is because referencing associated
+/// types requires collecting all inherit impls, so if we define an inherent impl
+/// on FsContext, then that creates a cycle between "collecting all inherit impls"
+/// and itself.
+///
+/// I wonder if this is actually the case or is a restriction of the rust compiler:
+/// should collecting all inherent impls of two different types be considered the
+/// same step for the sake of cycle detection?
+pub type FsLoaderFile = std::fs::File;
 impl Loader for FsLoader {
-    type File = std::fs::File;
+    type File = FsLoaderFile;
 
     fn find_file(&self, url: &str) -> Result<Option<Self::File>, LoadError> {
         if !url.is_empty() {

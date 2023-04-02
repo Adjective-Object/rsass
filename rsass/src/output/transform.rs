@@ -5,7 +5,7 @@ use super::cssdest::CssDestination;
 use super::CssData;
 use crate::css::{self, AtRule, Import};
 use crate::error::ResultPos;
-use crate::input::{Context, Loader, Parsed, SourceKind};
+use crate::input::{Context, Parsed, Resolver, SourceKind};
 use crate::sass::{get_global_module, Expose, Item, UseAs};
 use crate::value::ValueRange;
 use crate::{Error, Invalid, ScopeRef};
@@ -14,7 +14,7 @@ pub fn handle_parsed(
     items: Parsed,
     dest: &mut dyn CssDestination,
     scope: ScopeRef,
-    file_context: &mut Context<impl Loader>,
+    file_context: &mut Context<impl Resolver>,
 ) -> Result<(), Error> {
     match items {
         Parsed::Scss(items) => handle_body(&items, dest, scope, file_context),
@@ -26,7 +26,7 @@ fn handle_body(
     items: &[Item],
     dest: &mut dyn CssDestination,
     scope: ScopeRef,
-    file_context: &mut Context<impl Loader>,
+    file_context: &mut Context<impl Resolver>,
 ) -> Result<(), Error> {
     for b in items {
         handle_item(b, dest, scope.clone(), file_context)?;
@@ -38,7 +38,7 @@ fn handle_item(
     item: &Item,
     dest: &mut dyn CssDestination,
     scope: ScopeRef,
-    file_context: &mut Context<impl Loader>,
+    file_context: &mut Context<impl Resolver>,
 ) -> Result<(), Error> {
     match item {
         Item::Use(ref name, ref as_n, ref with, ref pos) => {

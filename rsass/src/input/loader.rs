@@ -1,10 +1,8 @@
-use std::{borrow::Cow, fmt};
-use tracing::instrument;
-use crate::{Error};
 use super::{
-    SourceFile, SourceKind,
-    resolver::Resolver
+    resolver::{ResolutionResult, Resolver},
+    SourceKind,
 };
+use std::{borrow::Cow, fmt};
 
 type Combine = &'static dyn Fn(&str, &str) -> String;
 
@@ -85,22 +83,34 @@ impl fmt::Debug for LoadError {
     }
 }
 
+/// Simple resolver that wraps a [`Loader`] and presents a
+/// [`Resolver`]-compatible interface
+///
+/// This is done as a generic wrapper struct rather than as a trait
+/// implementation on Loader<T> itself so as to avoid dyn traits
 #[derive(Debug)]
-pub struct LoaderResolver<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> {
-    loader: AnyLoader,
+pub struct LoaderResolver<
+    AnyFile: std::fmt::Debug + std::io::Read,
+    AnyLoader: Loader<File = AnyFile>,
+> {
+    /// The loader to wrap as a resolver.
+    pub loader: AnyLoader,
 }
 
-impl<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> LoaderResolver<AnyFile, AnyLoader> {
-    pub fn new(
-        loader: AnyLoader,
-    ) -> Self {
+impl<
+        AnyFile: std::fmt::Debug + std::io::Read,
+        AnyLoader: Loader<File = AnyFile>,
+    > LoaderResolver<AnyFile, AnyLoader>
+{
+    /// Creates a new LoaderResolver from a Loader
+    pub fn new(loader: AnyLoader) -> Self {
         Self { loader }
     }
 
     /// Find a file.
     ///
     /// This method handles sass file name resolution, but delegates
-    /// the actual checking for existing files to the [`Loader`].
+    /// the actual checking for existing files to the inner [`Loader`].
     ///
     /// Given a url like `my/util`, this method will check for
     /// `my/util`, `my/util.scss`, `my/_util.scss`,
@@ -112,19 +122,12 @@ impl<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> LoaderResolver
     /// If `from` indicates that the loading is for an `@import` rule,
     /// some [extra file names][import-only] are checked.
     ///
-    /// The `Context` keeps track of "locked" files (files currently beeing
-    /// parsed or transformed into css).
-    /// The source file returned from this function is locked, so the
-    /// caller of this method need to call [`Self::unlock_loading`] after
-    /// handling it.
-    ///
     /// [import-only]: https://sass-lang.com/documentation/at-rules/import#import-only-files
-    #[instrument]
     pub fn find_file(
-        &mut self,
+        &self,
         url: &str,
-        from: SourceKind,
-    ) -> Result<Option<SourceFile>, Error> {
+        from: &SourceKind,
+    ) -> Result<Option<ResolutionResult<AnyFile>>, LoadError> {
         let names: &[Combine] = if from.is_import() {
             &[
                 // base will either be empty or end with a slash.
@@ -153,11 +156,8 @@ impl<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> LoaderResolver
         // Note: Should a "full stack" of bases be used here?
         // Or is this fine?
         let url = relative(&from, url);
-        if let Some((path, mut file)) = self.do_find_file(&url, names)? {
-            let is_module = !from.is_import();
-            let source = from.url(&path);
-            let file = SourceFile::read(&mut file, source)?;
-            Ok(Some(file))
+        if let Some((path, file)) = self.do_find_file(&url, names)? {
+            Ok(Some(ResolutionResult { path, file }))
         } else {
             Ok(None)
         }
@@ -190,7 +190,7 @@ impl<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> LoaderResolver
             }
             Ok(None)
         }
-    } 
+    }
 }
 
 /// Make a url relative to a given base.
@@ -206,10 +206,18 @@ fn relative<'a>(base: &SourceKind, url: &'a str) -> Cow<'a, str> {
 }
 
 /// A basic Resolver that uses fallback logic to resolve a single Loader.
-impl<AnyFile: std::fmt::Debug, AnyLoader: Loader<File = AnyFile>> Resolver for LoaderResolver<AnyFile, AnyLoader> {
+impl<
+        AnyFile: std::fmt::Debug + std::io::Read,
+        AnyLoader: Loader<File = AnyFile>,
+    > Resolver for LoaderResolver<AnyFile, AnyLoader>
+{
     type File = AnyFile;
 
-    fn resolve(&self, from_path: &str, url: &str) -> Result<Option<Self::File>, LoadError> {
-        self.find_file(from_path, url)
+    fn resolve(
+        &self,
+        url: &str,
+        from: &SourceKind,
+    ) -> Result<Option<ResolutionResult<Self::File>>, LoadError> {
+        self.find_file(url, &from)
     }
 }

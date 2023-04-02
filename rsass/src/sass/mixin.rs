@@ -3,7 +3,7 @@ use super::{
     Value,
 };
 use crate::css::{self, CssString, ValueToMapError};
-use crate::input::{Context, Loader, Parsed, SourceKind, SourcePos};
+use crate::input::{Context, Parsed, Resolver, SourceKind, SourcePos};
 use crate::ordermap::OrderMap;
 use crate::ScopeRef;
 use std::convert::TryInto;
@@ -31,7 +31,7 @@ impl MixinDecl {
         scope: ScopeRef,
         call_args: &CallArgs,
         call_pos: &SourcePos,
-        file_context: &mut Context<impl Loader>,
+        file_context: &mut Context<impl Resolver>,
     ) -> Result<Mixin, CallError> {
         match self {
             MixinDecl::Sass(decl) => {
